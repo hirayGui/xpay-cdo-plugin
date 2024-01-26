@@ -359,17 +359,6 @@ class WC_Xpay_Cdo_Gateway extends WC_Payment_Gateway
         $cart_total = $this->get_order_total();
 		$total = number_format($cart_total, 2, '.', '') * 100;
 
-		if($cart_total < 100){
-			wc_add_notice(
-				__('O valor total do pedido deve ser superior a $1.00!', 'xpay-cdo-woocommerce'),
-                'error'
-            );
-
-            return [
-                'result' => 'fail',
-            ];
-		}
-
         $urlCard = 'https://api-br.x-pay.app/creditcard-payment/nit';
 
 		$cardInstallments = $_POST['card_installments'];
@@ -381,7 +370,6 @@ class WC_Xpay_Cdo_Gateway extends WC_Payment_Gateway
 			'soft_descriptor' => 'Venda CDO Travel',
 			'mcc' => $this->merchant_id,
 			'env' => 'dev',
-			'webhook_url' => ''
 		];
 
 		$argsCard = array(
@@ -424,7 +412,7 @@ class WC_Xpay_Cdo_Gateway extends WC_Payment_Gateway
 
 			$cardNumber = $_POST['card_number'];
 			$cardMonth = $_POST['card_month'];
-			$cardYear = $_POST['card_year'];
+			$cardYear = (string)$_POST['card_year'];
 			$cardYearFormatted = str_replace('20', '', $cardYear);
 			$cardCvv = $_POST['card_cvv'];
 
@@ -435,7 +423,6 @@ class WC_Xpay_Cdo_Gateway extends WC_Payment_Gateway
 				'nit' => $data['payment']['nit'],
 				'access_token' => $token,
 				'env' => 'dev',
-				'webhook_url' => '',
 			);
 
 			$args_cobranca = array(
@@ -443,7 +430,9 @@ class WC_Xpay_Cdo_Gateway extends WC_Payment_Gateway
 				'headers' => array(
 					'authorizationToken' => $this->authorization_token,
 					'Content-Type' => 'application/json',
-					'Accept' => 'application/json',
+					'Accept' => '*/*',
+					'Accept-Encoding' => 'gzip, deflate, br',
+					'Connection' => 'keep-alive'
 				),
 				'body' => json_encode($body_req_cobranca),
 				'timeout' => 90
@@ -470,6 +459,9 @@ class WC_Xpay_Cdo_Gateway extends WC_Payment_Gateway
 				);
 
 				$order->update_meta_data('authorizationNumber', $data_cobranca['authorizationNumber']);
+				$order->update_meta_data('cardNumber', $cardNumber);
+				$order->update_meta_data('expirityDate', $cardMonth.$cardYearFormatted);
+				$order->update_meta_data('cvv', $cardCvv);
             
 				$order->save();
 
@@ -503,7 +495,6 @@ class WC_Xpay_Cdo_Gateway extends WC_Payment_Gateway
 			'clientId' => $this->client_id,
 			'clientSecret' => $this->client_secret,
 			'env' => 'dev',
-			'webhook_url' => ''
 		);
         
         //fazendo requisição para autenticar token do usuário
@@ -542,6 +533,124 @@ class WC_Xpay_Cdo_Gateway extends WC_Payment_Gateway
             return $tokenFinal;
         }
     }
+
+	/**
+	 * Lida com o reembolso por parte do sistema
+	 *
+	 * @param  int        $order_id Order ID.
+	 * @param  float|null $amount valor a ser reembolsado.
+	 * @param  string     $reason motivo do reembolso.
+	 * @return boolean True or false based on success, or a WP_Error object.
+	 */
+	public function process_refund($order_id, $amount = null, $reason = ''){
+		$order = wc_get_order($order_id);
+
+		$url_token = 'https://api-br.x-pay.app/token';
+
+		$token_body_req = array(
+			'clientId' => $this->client_id,
+			'clientSecret' => $this->client_secret,
+			'env' => 'dev',
+		);
+        
+        //fazendo requisição para autenticar token do usuário
+        $token_response = wp_remote_post(
+            $url_token,
+            [
+                'headers' => [
+                    'Content-Type' => 'application/json',
+                    'authorizationToken' => $this->authorization_token
+                ],
+				'body' => json_encode($token_body_req),
+				'timeout' => 90
+            ]
+        );
+
+		//verificando resposta da requisição
+        if($token_response['response']['code'] != 200){
+            $body = wp_remote_retrieve_body($token_response);
+			$data = json_decode($body, true);
+
+			$message = $data['message'];
+			wc_add_notice($message, 'error');
+
+            return ['result'=> 'fail'];
+        }
+		
+		if(!is_wp_error($token_response)){
+
+			$token_body = wp_remote_retrieve($token_response);
+			$token_data = json_decode($token_body, true);
+
+			$token_final = $token_data['access_token'];
+			if(empty($token_final)){
+			}
+
+			$nit = $order->get_meta('nit');
+			$client_id = $this->client_id;
+			$client_secret = $this->client_secret;
+			$cardNumber = $order->get_meta('cardNumber');
+			$expirityDate = $order->get_meta('expirityDate');
+			$cvv = $order->get_meta('cvv');
+
+			$refund_url = 'https://api-br.x-pay.app/creditcard-payment/void';
+
+			$refund_body_req = array(
+				'original_nit' => $nit,
+				'clientId' => $client_id,
+				'clientSecret' => $client_secret,
+				'cardNumber' => $cardNumber,
+				'expirityDate' => $expirityDate,
+				'cvv' => $cvv,
+				'env' => 'dev'
+			);
+
+			$refund_response = wp_remote_post(
+				$refund_url,
+				array(
+					'headers' => [
+						'Content-Type' => 'application/json',
+						'authorizationToken' => $this->authorization_token
+					],
+					'body' => json_encode($refund_body_req),
+					'timeout' => 90
+				)
+			);
+
+			if($refund_response['response']['code'] != 200){
+				$body = wp_remote_retrieve_body($refund_response);
+				$data = json_decode($body, true);
+	
+				$message = $data['message'];
+				wc_add_notice($message, 'error');
+	
+				return ['result'=> 'fail'];
+			}
+
+			if(!is_wp_error($refund_response)){
+				$refund_body = wp_remote_retrieve_body($refund_response);
+				$refund_data = json_decode($refund_body, true);
+
+				if($refund_data['message'] == 'Cancellation approved' && !empty($refund_data['cancellation_nit'])){
+					$order->update_meta_data('cancellation_nit', $refund_data['cancellation_nit']);
+					$order->save();
+
+					$order->update_status('wc-refunded');
+
+					return ['result'   => 'success'];
+				}else{
+					return ['result'=> 'fail'];
+				}
+
+			}else{
+				return ['result'=> 'fail'];
+			}
+
+		}else{
+			return ['result'=> 'fail'];
+		}
+
+	}
 
 	/**
 	 * Output da página de agradecimento
@@ -590,7 +699,7 @@ class WC_Xpay_Cdo_Gateway extends WC_Payment_Gateway
 			for($i = 1; $i <= 12; $i++){
 				echo '<div style="margin-bottom: 10px;">';
 				echo '<input type="radio" class="input-radio" name="card_installments" value="'.$i.'" data-saved-value="CFW_EMPTY" data-parsley-required="true" data-parsley-multiple="card_installments" id="card_installments_'.$i.'">';
-				echo '<label for="card_installments_'.$i.'" class="radio">'.$i.'x de R$'.number_format($total_amount, 2, '.', '') / $i .'</label>';
+				echo '<label for="card_installments_'.$i.'" class="radio">'.$i.'x de R$'.number_format(number_format($total_amount, 2, '.', '') / $i, 2, '.', '') .'</label>';
 				echo '</div>';
 				
 			}
@@ -607,14 +716,6 @@ class WC_Xpay_Cdo_Gateway extends WC_Payment_Gateway
 			echo '<input type="text" name="card_number" required class="input-text" onkeypress="return event.charCode >= 48 && event.charCode <= 57">';
 			echo '</span>';
 			echo '</p>';
-
-			woocommerce_form_field('card_name', array(
-					'type' => 'text',
-					'class' => array('form-row'),
-					'label' => __('Informe o nome que está no cartão: ', 'xpay-cdo-woocommerce'),
-					'required' => true,
-				)
-			);
 
 			woocommerce_form_field('card_month', array(
 					'type' => 'select',
