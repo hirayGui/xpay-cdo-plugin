@@ -61,14 +61,40 @@ class WC_Xpay_Cdo_Gateway extends WC_Payment_Gateway
 		$this->init_settings();
 
 		// Get settings.
-		$this->title              = $this->get_option('title');
-        $this->merchant_id      = $this->get_option('merchant_id');
-        $this->client_id         = $this->get_option('client_id');
-        $this->client_secret      = $this->get_option('client_secret');
-        $this->authorization_token         = $this->get_option('authorization_token');
-		$this->description        = $this->get_option('description');
-		$this->instructions       = $this->get_option('instructions');
-		$this->enable_for_methods = $this->get_option('enable_for_methods', array());
+		$this->title              	= $this->get_option('title');
+        $this->merchant_id      	= $this->get_option('merchant_id');
+        $this->client_id         	= $this->get_option('client_id');
+        $this->client_secret      	= $this->get_option('client_secret');
+        $this->authorization_token  = $this->get_option('authorization_token');
+		$this->description        	= $this->get_option('description');
+		$this->instructions       	= $this->get_option('instructions');
+		$this->enable_for_methods 	= $this->get_option('enable_for_methods', array());
+
+		
+		$installments_url = 'https://api-br.x-pay.app/creditcard-payment/interests';
+		$installments_req = [
+			"idCompany" => "f15984f7b82758a736120dea8012d0221e84eb3a",
+			"apiToken" => "coisasdeorlando-xpay"
+		];
+		$installments_res = wp_remote_post(
+			$installments_url,
+			array(
+				'headers' => [
+					'Content-Type' => 'application/json',
+					'authorizationToken' => $this->authorization_token
+				],
+				'body' => json_encode($installments_req),
+				'timeout' => 90
+			)
+		);
+
+		if(!is_wp_error($installments_res)) {
+			$installments_body = wp_remote_retrieve_body($installments_res);
+			$installments_data = json_decode($installments_body, true);
+
+			$this->parcelas = $installments_data['interests'];
+		}
+
 
 		// Actions.
 		add_action('woocommerce_update_options_payment_gateways_' . $this->id, array($this, 'process_admin_options'));
@@ -109,7 +135,7 @@ class WC_Xpay_Cdo_Gateway extends WC_Payment_Gateway
 	public function init_form_fields()
 	{
 		$this->form_fields = array(
-			'enabled'            => array(
+			'enabled'            	=> array(
 				'title'       => __('Ativar/Desativar', 'xpay-cdo-woocommerce'),
 				'label'       => __('Ativar Pagamento no Cartão de Crédito - Xpay', 'xpay-cdo-woocommerce'),
 				'type'        => 'checkbox',
@@ -687,7 +713,6 @@ class WC_Xpay_Cdo_Gateway extends WC_Payment_Gateway
 		*/    
 		if($payment_id === 'xpay-credit'){
 			ob_start();
-
 			echo '<div style="display: flex; width: 100%!important; height: auto;">';
 
 			echo '<div style="display: block; width: 100% !important; height: auto;">';
@@ -695,14 +720,24 @@ class WC_Xpay_Cdo_Gateway extends WC_Payment_Gateway
 			echo '<h4>Número de Parcelas: &nbsp;<abbr class="required" title="obrigatório">*</abbr></h4>';
 			echo '<br><span class="woocommerce-input-wrapper" style="padding-top: 15px;">';
 			
-
-			for($i = 1; $i <= 12; $i++){
-				echo '<div style="margin-bottom: 10px;">';
-				echo '<input type="radio" class="input-radio" name="card_installments" value="'.$i.'" data-saved-value="CFW_EMPTY" data-parsley-required="true" data-parsley-multiple="card_installments" id="card_installments_'.$i.'">';
-				echo '<label for="card_installments_'.$i.'" class="radio">'.$i.'x de R$'.number_format(number_format($total_amount, 2, '.', '') / $i, 2, '.', '') .'</label>';
-				echo '</div>';
+			//loop para parcelas [estático]
+			// for($i = 1; $i <= 12; $i++){
+			// 	echo '<div style="margin-bottom: 10px;">';
+			// 	echo '<input type="radio" class="input-radio" name="card_installments" value="'.$i.'" data-saved-value="CFW_EMPTY" data-parsley-required="true" data-parsley-multiple="card_installments" id="card_installments_'.$i.'">';
+			// 	echo '<label for="card_installments_'.$i.'" class="radio">'.$i.'x de R$'.number_format(number_format($total_amount, 2, '.', '') / $i, 2, '.', '') .'</label>';
+			// 	echo '</div>';
 				
+			// }
+
+			//loop para parcelas [dinâmico]
+			foreach( $this->parcelas as $parcela ) {
+				
+				echo '<div style="margin-bottom: 10px;">';
+				echo '<input type="radio" class="input-radio" name="card_installments" value="'.$parcela['installments'].'" data-saved-value="CFW_EMPTY" data-parsley-required="true" data-parsley-multiple="card_installments" id="card_installments_'.$parcela['installments'].'">';
+				echo '<label for="card_installments_'.$parcela['installments'].'" class="radio">'.$parcela['installments'].'x de R$'.number_format(number_format($total_amount, 2, '.', '') * $parcela['interest'] / $parcela['installments'], 2, '.', '') .'</label>';
+				echo '</div>';
 			}
+			
 
 			echo '</span>';
 
